@@ -97,6 +97,8 @@ func (s *Stripe) ReadByteAt(off int64) (byte, error) {
 		return 0, io.EOF
 	}
 
+	off += BlockSize // Skip Header Block
+
 	bIdx := off / BlockSize
 	if bIdx >= int64(len(s.Blocks)) {
 		return 0, io.EOF
