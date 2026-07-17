@@ -37,6 +37,43 @@ pub struct Node {
 }
 
 impl Node {
+    /// Accepts from listener and spawns a task per connection into `Node::new`.
+    /// For a listener shared with other protocols, demux externally and call
+    /// `Node::new` directly instead.
+    pub async fn serve(listener: std::os::unix::net::UnixListener, handler: Handler) -> Result<()> {
+        let rt = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            for stream in listener.incoming() {
+                let stream = stream?;
+                let handler = Arc::clone(&handler);
+                rt.spawn(async move {
+                    match Node::new(stream, handler) {
+                        Ok(node) => {
+                            if let Err(e) = Arc::new(node).start_event_loop().await {
+                                eprintln!("Node event loop error: {}", e);
+                            }
+                        }
+                        Err(e) => eprintln!("Node handshake failed: {}", e),
+                    }
+                });
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| crate::error::MmfgError::Internal(format!("serve task panicked: {}", e)))?
+    }
+
+    /// Binds socket_path and serves it. Convenience wrapper around `serve`.
+    pub async fn listen(socket_path: &str, handler: Handler) -> Result<()> {
+        if std::fs::metadata(socket_path).is_ok() {
+            std::fs::remove_file(socket_path)?;
+        }
+        let listener = std::os::unix::net::UnixListener::bind(socket_path)?;
+        Self::serve(listener, handler).await
+    }
+
+    /// Runs the Hub handshake over an accepted stream and builds a `Node`.
+    /// Callers are responsible for routing only mmfg traffic here.
     pub fn new(stream: std::os::unix::net::UnixStream, handler: Handler) -> Result<Self> {
         let mut stream_sync = stream;
         let handshake = perform_handshake(&mut stream_sync)?;
