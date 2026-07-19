@@ -3,8 +3,6 @@
 package shm
 
 import (
-	"syscall"
-
 	"golang.org/x/sys/unix"
 )
 
@@ -21,20 +19,20 @@ func NewChunk(name string) (*Chunk, error) {
 		return nil, err
 	}
 	fdNum := int(fd)
-	if err := syscall.Ftruncate(fdNum, int64(ChunkSize)); err != nil {
-		syscall.Close(fdNum)
+	if err := unix.Ftruncate(fdNum, int64(ChunkSize)); err != nil {
+		unix.Close(fdNum)
 		return nil, err
 	}
 	chunk, err := AttachChunk(fdNum)
 	if err != nil {
-		syscall.Close(fdNum)
+		unix.Close(fdNum)
 		return nil, err
 	}
 	return chunk, nil
 }
 
 func AttachChunk(fd int) (*Chunk, error) {
-	data, err := syscall.Mmap(fd, 0, ChunkSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	data, err := unix.Mmap(fd, 0, ChunkSize, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
 		return nil, err
 	}
@@ -46,11 +44,11 @@ func (c *Chunk) Close() error {
 		return nil
 	}
 	if c.Data != nil {
-		syscall.Munmap(c.Data)
+		unix.Munmap(c.Data)
 		c.Data = nil
 	}
 	if c.Fd >= 0 {
-		err := syscall.Close(c.Fd)
+		err := unix.Close(c.Fd)
 		c.Fd = -1
 		return err
 	}
