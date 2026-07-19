@@ -1,6 +1,6 @@
 # MMFG
 
-MMFG is a high-performance Inter-Process Communication (IPC) framework designed for sub-microsecond latency and extremely high concurrency requirements. It combines zero-copy data transfer mechanisms using `memfd_create` and `mmap`, and utilizes Unix Domain Sockets (UDS) and `eventfd` for efficient signal delivery.
+MMFG is a high-performance Inter-Process Communication (IPC) framework built around zero-copy data transfer and extremely high concurrency requirements. It uses shared memory to move data between processes without copying, and Unix Domain Sockets (UDS) for efficient signal delivery.
 
 MMFG is primarily used to achieve **zero-copy chained processing** among multiple independent processes (Nodes). Through a "handoff" mechanism, data ownership can be transferred between nodes without any memory copying or reallocation, making it ideal for building high-performance data processing pipelines.
 
@@ -19,7 +19,7 @@ MMFG is primarily used to achieve **zero-copy chained processing** among multipl
 
 ## Chained Processing (Handoff) Protocol
 
-To maintain sub-microsecond latency in complex workflows, MMFG implements an atomic handoff protocol:
+To keep complex workflows zero-copy end-to-end, MMFG implements an atomic handoff protocol:
 
 1. **Lazy Binding**: Connections start as local resources of the Hub. A global `SlotID` is only assigned upon the first data transfer to a Node.
 2. **State Synchronization**: The Hub ensures the previous owner has completed its task (status is Done) before migrating access rights.

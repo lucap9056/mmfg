@@ -1,8 +1,8 @@
 # MMFG (Memory Mapped Fast Gateway)
 
-MMFG 是一個高效能的處理序間通訊 (IPC) 框架，專為亞微秒級 (sub-microsecond) 延遲與極高併發需求而設計。它結合了 `memfd_create` 與 `mmap` 的零拷貝 (zero-copy) 資料傳輸機制，並利用 Unix Domain Sockets (UDS) 與 `eventfd` 實現高效的信號傳遞。
+MMFG 是一個高效能的 process 間通訊 (IPC) 框架，圍繞零拷貝 (zero-copy) 資料傳輸與極高併發需求而設計。它利用共享記憶體在 process 之間搬移資料而不需拷貝，並透過 Unix Domain Sockets (UDS) 實現高效的信號傳遞。
 
-MMFG 的主要用途在於實現多個獨立處理序 (Nodes) 之間的**零拷貝鏈式處理 (chained processing)**。透過「接管 (handoff)」機制，資料所有權可以在節點間轉移，而無需進行任何記憶體拷貝或重新分配，非常適合建構高效能的資料處理流水線 (data pipelines)。
+MMFG 的主要用途在於實現多個獨立 process (Nodes) 之間的**零拷貝鏈式處理 (chained processing)**。透過「接管 (handoff)」機制，資料所有權可以在節點間轉移，而無需進行任何記憶體拷貝或重新分配，非常適合建構高效能的資料處理流水線 (data pipelines)。
 
 ## 核心特性
 
@@ -19,31 +19,31 @@ MMFG 的主要用途在於實現多個獨立處理序 (Nodes) 之間的**零拷�
 
 ## 鏈式處理 (Handoff) 協定
 
-為了在複雜的工作流中維持亞微秒級延遲，MMFG 實作了原子化的接管協定：
+為了在複雜的工作流中維持全程零拷貝，MMFG 實作了原子化的接管協定：
 
 1. **延遲綁定 (Lazy Binding)**：連線最初作為 Hub 的本地資源。只有在第一次將資料轉移給 Node 時，才會分配全域 `SlotID`。
 2. **狀態同步**：Hub 確保前一個持有者已完成任務 (狀態為 Done)，才進行存取權遷移。
-3. **同步接管 (Synchronous Handoff)**：`Next(nodeName)` 方法會轉移所有權並**阻塞**直到目標節點處理完畢，隨後將控制權（及更新後的元數據）交還給 Hub。
+3. **同步接管 (Synchronous Handoff)**：`Next(nodeName)` 方法會轉移所有權並**阻塞**直到目標節點處理完畢，隨後將控制權（及更新後的 metadata）交還給 Hub。
 4. **流水線效率**：資料從 Node A 流向 Node B 再到 Node C，全程留在共享記憶體中，完全無需拷貝。
 
 ## 系統架構
 
 ### Hub (資源管理者)
-系統的中央控制器。
+系統的中央 controller。
 - 管理 Node 連線池。
-- 分配並管理共享記憶體匯流排 (Bus)。
+- 分配並管理共享記憶體 bus。
 - 協調任務分派與資源生命週期。
 
 ### Node (被動回應者)
-負責處理 Hub 交辦任務的端點。
+負責處理 Hub 交辦任務的 endpoint。
 - 透過 UDS 監聽 Hub 連線。
 - 直接操作共享記憶體區塊。
-- 透過共用回應佇列向 Hub 回報任務完成。
+- 透過共用回應 queue 向 Hub 回報任務完成。
 
-### 匯流排與記憶體佈局
+### Bus 與記憶體佈局
 - **Chunk**：透過 `memfd_create` 建立的 4MB 記憶體單位。
 - **Block**：資源分配的最小邏輯單位，大小為 4KB。
-- **Stripe**：一組 Block 的序列。第一個 Block 為 **Header Block**，存放資料長度與 Block 序列等元數據。
+- **Stripe**：一組 Block 的序列。第一個 Block 為 **Header Block**，存放資料長度與 Block 序列等 metadata。
 
 ## 使用範例 (Go)
 
