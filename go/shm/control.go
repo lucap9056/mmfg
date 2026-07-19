@@ -10,6 +10,7 @@ import (
 
 // Control provides a view and access methods for the Bus Control Stripe.
 type Control struct {
+	cursor atomic.Uint32
 	stripe *Stripe
 }
 
@@ -135,10 +136,12 @@ func (c *Control) Pop(qOffset uintptr) (uint32, uint32, bool) {
 // --- Stripe Registry Methods ---
 
 func (c *Control) AllocSlot() (uint32, bool) {
-	for i := uint32(1); i <= MaxTotalSlots; i++ {
-		off := GetStripeEntryOffset(i) + STRIPE_OFF_STATUS
+	start := c.cursor.Add(1)
+	for i := uint32(0); i < MaxTotalSlots; i++ {
+		slot := (start+i-1)%MaxTotalSlots + 1
+		off := GetStripeEntryOffset(slot) + STRIPE_OFF_STATUS
 		if c.casU32(off, StripeStatusIdle, StripeStatusBusy) {
-			return i, true
+			return slot, true
 		}
 	}
 	return 0, false
