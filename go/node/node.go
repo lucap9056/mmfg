@@ -126,7 +126,7 @@ func (n *Node) HandleConn(conn *net.UnixConn) {
 
 	for {
 		if err := n.handleMessage(conn, oob); err != nil {
-			log.Printf("")
+			log.Printf("Node %d: connection closed: %v", n.nodeID, err)
 			break
 		}
 	}
