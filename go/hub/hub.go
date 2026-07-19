@@ -20,7 +20,7 @@ type Hub struct {
 	ctrl    *shm.Control
 	respEv  *mmfg_sync.Eventfd
 	nodes   map[string]*NodeInfo
-	waiters [shm.MaxTotalSlots]atomic.Pointer[chan error]
+	waiters [shm.MaxTotalSlots + 1]atomic.Pointer[chan error]
 	nodeIDs [shm.MaxNodes]uint64
 
 	chunk0Name string
