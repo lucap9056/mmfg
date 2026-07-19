@@ -181,7 +181,7 @@ func handshake(conn *net.UnixConn, oob []byte) (session *nodeSession, err error)
 	}()
 
 	if n != 7 {
-		err = fmt.Errorf("")
+		err = fmt.Errorf("short header: got %d bytes, want 7", n)
 		return
 	}
 
@@ -200,12 +200,12 @@ func handshake(conn *net.UnixConn, oob []byte) (session *nodeSession, err error)
 	nodeID := int(header[6])
 
 	if nodeID <= 0 || nodeID >= shm.MaxNodes {
-		err = fmt.Errorf("")
+		err = fmt.Errorf("invalid nodeID %d", nodeID)
 		return
 	}
 
 	if len(fds) < 3 {
-		err = fmt.Errorf("")
+		err = fmt.Errorf("expected at least 3 fds, got %d", len(fds))
 		return
 	}
 
