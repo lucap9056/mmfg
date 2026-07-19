@@ -16,6 +16,7 @@ import (
 	"github.com/nautrouds/mmfg/go/shm"
 	mmfg_sync "github.com/nautrouds/mmfg/go/sync"
 	"github.com/nautrouds/mmfg/internal/netutil"
+	"golang.org/x/sys/unix"
 )
 
 type Connection interface {
@@ -90,12 +91,15 @@ func (n *Node) Serve(l *net.UnixListener) error {
 	}
 }
 
+var maxOobLen = unix.CmsgSpace((shm.MaxChunks + 2) * 4)
+
 // HandleConn runs the Hub handshake and event loop over an accepted conn.
 // Callers are responsible for routing only mmfg traffic here.
 func (n *Node) HandleConn(conn *net.UnixConn) {
 	defer conn.Close()
+	oob := make([]byte, maxOobLen)
 
-	session, err := handshake(conn)
+	session, err := handshake(conn, oob)
 	if err != nil {
 		return
 	}
@@ -161,56 +165,102 @@ type nodeSession struct {
 	Chunks        []*shm.Chunk
 }
 
-func handshake(conn *net.UnixConn) (*nodeSession, error) {
+func handshake(conn *net.UnixConn, oob []byte) (session *nodeSession, err error) {
 	header := make([]byte, 7)
-	if _, err := io.ReadFull(conn, header); err != nil {
-		return nil, err
+	n, fds, err := netutil.ReceiveMsgWithFDs(conn, header, oob)
+	if err != nil {
+		return
+	}
+
+	defer func() {
+		for i, fd := range fds {
+			if err != nil || i >= 2 {
+				unix.Close(fd)
+			}
+		}
+	}()
+
+	if n != 7 {
+		err = fmt.Errorf("")
+		return
 	}
 
 	if !bytes.Equal(header[:4], mmfg_sync.CONN_HEADER) {
 		log.Printf("Invalid handshake header: %s", string(header[:4]))
-		return nil, fmt.Errorf("invalid handshake header")
+		err = fmt.Errorf("invalid handshake header")
+		return
 	}
 
 	if header[4] != mmfg_sync.CONN_VERSION {
 		log.Printf("Unsupported version: %d", header[4])
-		return nil, fmt.Errorf("unsupported version")
+		err = fmt.Errorf("unsupported version")
+		return
 	}
 
 	nodeID := int(header[6])
 
-	fds, err := netutil.ReceiveFDs(conn, 3)
-	if err != nil {
-		return nil, err
+	if nodeID <= 0 || nodeID >= shm.MaxNodes {
+		err = fmt.Errorf("")
+		return
 	}
 
-	chunk0, err := shm.AttachChunk(fds[0])
-	if err != nil {
-		return nil, err
+	if len(fds) < 3 {
+		err = fmt.Errorf("")
+		return
 	}
-	// Close FD immediately after mmap for Nodes
-	syscall.Close(fds[0])
-	chunk0.Fd = -1
+
+	chunks := make([]*shm.Chunk, 0, len(fds)-2)
+	defer func() {
+		if err != nil {
+			for _, c := range chunks {
+				c.Close()
+			}
+		}
+	}()
 
 	blkCnt := shm.ControlStripeSize / shm.BlockSize
-
 	controlStripe := &shm.Stripe{
 		BlockCount: blkCnt,
 		Blocks:     make([][]byte, blkCnt),
 	}
 
-	for i := range blkCnt {
-		offset := i * shm.BlockSize
-		controlStripe.Blocks[i] = chunk0.Data[offset : offset+shm.BlockSize]
+	var nodeEv int
+	var hubEv int
+
+	for i, fd := range fds {
+
+		switch i {
+		case 0:
+			nodeEv = fd
+		case 1:
+			hubEv = fd
+		default:
+			var chunk *shm.Chunk
+			chunk, err = shm.AttachChunk(fd)
+			if err != nil {
+				return
+			}
+
+			if i == 2 {
+				for j := range blkCnt {
+					offset := j * shm.BlockSize
+					controlStripe.Blocks[j] = chunk.Data[offset : offset+shm.BlockSize]
+				}
+			}
+
+			chunks = append(chunks, chunk)
+			chunk.Fd = -1
+		}
 	}
 
-	return &nodeSession{
+	session = &nodeSession{
 		NodeID:        nodeID,
-		NodeEv:        fds[1],
-		HubEv:         fds[2],
+		NodeEv:        nodeEv,
+		HubEv:         hubEv,
 		ControlStripe: controlStripe,
-		Chunks:        []*shm.Chunk{chunk0},
-	}, nil
+		Chunks:        chunks,
+	}
+	return
 }
 
 func (n *Node) processSlot(slotID uint32) {
