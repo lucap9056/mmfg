@@ -67,7 +67,7 @@ func NewNode(opts ...NodeOption) *Node {
 // Listen binds socketPath and serves it. Convenience wrapper around Serve.
 func (n *Node) Listen(socketPath string) error {
 	os.Remove(socketPath)
-	l, err := net.Listen("unix", socketPath)
+	l, err := net.ListenUnix("unixpacket", &net.UnixAddr{Name: socketPath, Net: "unixpacket"})
 	if err != nil {
 		return err
 	}
@@ -76,19 +76,23 @@ func (n *Node) Listen(socketPath string) error {
 
 // Serve accepts from l and hands each conn to HandleConn. For a listener
 // shared with other protocols, demux externally and call HandleConn directly.
-func (n *Node) Serve(l net.Listener) error {
+func (n *Node) Serve(l *net.UnixListener) error {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
 			continue
 		}
-		go n.HandleConn(conn)
+		uc, ok := conn.(*net.UnixConn)
+		if !ok {
+			continue
+		}
+		go n.HandleConn(uc)
 	}
 }
 
 // HandleConn runs the Hub handshake and event loop over an accepted conn.
 // Callers are responsible for routing only mmfg traffic here.
-func (n *Node) HandleConn(conn net.Conn) {
+func (n *Node) HandleConn(conn *net.UnixConn) {
 	defer conn.Close()
 	// 1. Handshake
 	header := make([]byte, 7)
