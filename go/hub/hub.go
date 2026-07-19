@@ -38,7 +38,7 @@ func WithChunk0Name(name string) Option {
 
 type NodeInfo struct {
 	nodeID int
-	conn   net.Conn
+	conn   *net.UnixConn
 	nodeEv *mmfg_sync.Eventfd
 }
 
@@ -110,7 +110,7 @@ func NewHub(opts ...Option) (*Hub, error) {
 
 func (h *Hub) AppendedChunkBroacast(chunk *shm.Chunk) {
 	for _, node := range h.nodes {
-		h.syncChunk(node, chunk)
+		h.syncChunk(node, chunk.Fd)
 	}
 }
 
@@ -168,7 +168,7 @@ func (h *Hub) dispatchLoop() error {
 }
 
 func (h *Hub) Dial(nodeName string, socketPath string) error {
-	conn, err := net.Dial("unix", socketPath)
+	conn, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: socketPath, Net: "unixpacket"})
 	if err != nil {
 		return err
 	}
@@ -193,16 +193,20 @@ func (h *Hub) Dial(nodeName string, socketPath string) error {
 			byte(nodeID),
 		}...,
 	)
-	if _, err := conn.Write(header); err != nil {
-		return err
-	}
 
 	h.mu.RLock()
-	chunk0 := h.bus.GetChunk(-1)
+	chunkCount := h.bus.ChunkCount()
+	fds := make([]int, chunkCount+2)
+
+	fds[0] = nodeEv.Fd()
+	fds[1] = h.respEv.Fd()
+
+	for i := range chunkCount {
+		fds[i+2] = h.bus.GetChunk(int16(^i)).Fd
+	}
 	h.mu.RUnlock()
 
-	err = netutil.SendFDs(conn, chunk0.Fd, nodeEv.Fd(), h.respEv.Fd())
-	if err != nil {
+	if err := netutil.SendMsgWithFDs(conn, header, fds...); err != nil {
 		return err
 	}
 
@@ -212,13 +216,19 @@ func (h *Hub) Dial(nodeName string, socketPath string) error {
 		nodeEv: nodeEv,
 	}
 
-	h.mu.RLock()
-	for i := 1; i < h.bus.ChunkCount(); i++ {
-		h.syncChunk(nodeInfo, h.bus.GetChunk(int16(^i)))
-	}
-	h.mu.RUnlock()
-
 	h.mu.Lock()
+	afterChunkCount := h.bus.ChunkCount()
+	if chunkCount != afterChunkCount && afterChunkCount > chunkCount {
+		fds := make([]int, afterChunkCount-chunkCount)
+		for i := range fds {
+			fds[i] = h.bus.GetChunk(int16(^(i + chunkCount))).Fd
+		}
+		msg := []byte{byte(netutil.MsgNewChunk)}
+		if err := netutil.SendMsgWithFDs(conn, msg, fds...); err != nil {
+			h.mu.Unlock()
+			return err
+		}
+	}
 	h.nodes[nodeName] = nodeInfo
 	h.mu.Unlock()
 
@@ -268,10 +278,12 @@ func (h *Hub) CleanupResources(nodeID int) {
 	}
 }
 
-func (h *Hub) syncChunk(node *NodeInfo, chunk *shm.Chunk) {
+func (h *Hub) syncChunk(node *NodeInfo, fds ...int) {
 	header := []byte{byte(netutil.MsgNewChunk)}
-	node.conn.Write(header)
-	netutil.SendFDs(node.conn, chunk.Fd)
+	err := netutil.SendMsgWithFDs(node.conn, header, fds...)
+	if err != nil {
+		return
+	}
 }
 
 func (h *Hub) handleExpandRequest(nodeID int, slotID uint32) {
