@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/nautrouds/mmfg/go/shm"
@@ -101,60 +100,83 @@ func (n *Node) HandleConn(conn *net.UnixConn) {
 
 	session, err := handshake(conn, oob)
 	if err != nil {
+		log.Printf("handshake failed: %v", err)
 		return
 	}
 
-	n.mu.Lock()
-	n.nodeID = session.NodeID
-	n.ctrl = shm.NewControl(session.ControlStripe)
-	n.nodeEv = mmfg_sync.AttachEventfd(session.NodeEv)
-	n.hubEv = mmfg_sync.AttachEventfd(session.HubEv)
-	n.chunks = append(n.chunks, session.Chunks...)
-	n.mu.Unlock()
+	n.loadSession(session)
+
+	defer func() {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+
+		for _, c := range n.chunks {
+			c.Close()
+		}
+		n.chunks = nil
+		if n.nodeEv != nil {
+			n.nodeEv.Close()
+		}
+		if n.hubEv != nil {
+			n.hubEv.Close()
+		}
+	}()
 
 	go n.StartEventLoop()
 
 	for {
-		msgHeader := make([]byte, 1)
-		if _, err := io.ReadFull(conn, msgHeader); err != nil {
+		if err := n.handleMessage(conn, oob); err != nil {
+			log.Printf("")
 			break
 		}
+	}
+}
 
-		msgType := netutil.MsgType(msgHeader[0])
-		switch msgType {
-		case netutil.MsgNewChunk:
-			chunkFDs, err := netutil.ReceiveFDs(conn, 1)
-			if err != nil {
-				continue
-			}
-			chunk, err := shm.AttachChunk(chunkFDs[0])
-			if err != nil {
-				continue
-			}
-			syscall.Close(chunkFDs[0])
-			chunk.Fd = -1
-			n.mu.Lock()
-			n.chunks = append(n.chunks, chunk)
-			n.mu.Unlock()
-
-		case netutil.MsgRelease:
-			// ACK or Stop
+func (n *Node) handleMessage(conn *net.UnixConn, oob []byte) (err error) {
+	msgHeader := make([]byte, 1)
+	var fds []int
+	_, fds, err = netutil.ReceiveMsgWithFDs(conn, msgHeader, oob)
+	if err != nil {
+		return
+	}
+	defer func() {
+		for _, fd := range fds {
+			unix.Close(fd)
 		}
-	}
+	}()
 
-	// Cleanup on Hub disconnection
-	n.mu.Lock()
-	for _, c := range n.chunks {
-		c.Close()
+	switch netutil.MsgType(msgHeader[0]) {
+	case netutil.MsgNewChunk:
+		chunks := make([]*shm.Chunk, len(fds))
+
+		defer func() {
+			if err != nil {
+				for _, c := range chunks {
+					if c != nil {
+						c.Close()
+					}
+				}
+			}
+		}()
+
+		for i, fd := range fds {
+			chunks[i], err = shm.AttachChunk(fd)
+			if err != nil {
+				return
+			}
+			chunks[i].Fd = -1
+		}
+
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		n.chunks = append(n.chunks, chunks...)
+
+	case netutil.MsgRelease:
+		// ACK or Stop
+
+	default:
 	}
-	n.chunks = nil
-	if n.nodeEv != nil {
-		n.nodeEv.Close()
-	}
-	if n.hubEv != nil {
-		n.hubEv.Close()
-	}
-	n.mu.Unlock()
+	return
 }
 
 type nodeSession struct {
@@ -186,14 +208,12 @@ func handshake(conn *net.UnixConn, oob []byte) (session *nodeSession, err error)
 	}
 
 	if !bytes.Equal(header[:4], mmfg_sync.CONN_HEADER) {
-		log.Printf("Invalid handshake header: %s", string(header[:4]))
-		err = fmt.Errorf("invalid handshake header")
+		err = fmt.Errorf("Invalid handshake header: %s", string(header[:4]))
 		return
 	}
 
 	if header[4] != mmfg_sync.CONN_VERSION {
-		log.Printf("Unsupported version: %d", header[4])
-		err = fmt.Errorf("unsupported version")
+		err = fmt.Errorf("Unsupported version: %d", header[4])
 		return
 	}
 
@@ -261,6 +281,17 @@ func handshake(conn *net.UnixConn, oob []byte) (session *nodeSession, err error)
 		Chunks:        chunks,
 	}
 	return
+}
+
+func (n *Node) loadSession(s *nodeSession) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.nodeID = s.NodeID
+	n.ctrl = shm.NewControl(s.ControlStripe)
+	n.nodeEv = mmfg_sync.AttachEventfd(s.NodeEv)
+	n.hubEv = mmfg_sync.AttachEventfd(s.HubEv)
+	n.chunks = s.Chunks
 }
 
 func (n *Node) processSlot(slotID uint32) {
