@@ -1,4 +1,4 @@
-module github.com/nautrouds/mmfg
+module github.com/nautrouds/mmfg/v2
 
 go 1.25.6
 

@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/nautrouds/mmfg/go/shm"
+	"github.com/nautrouds/mmfg/v2/go/shm"
 )
 
 func TestViewer(t *testing.T) {

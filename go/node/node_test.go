@@ -7,7 +7,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/nautrouds/mmfg/go/shm"
+	"github.com/nautrouds/mmfg/v2/go/shm"
 )
 
 func TestNodeConnWriteRead(t *testing.T) {

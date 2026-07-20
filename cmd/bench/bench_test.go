@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nautrouds/mmfg/go/hub"
-	"github.com/nautrouds/mmfg/go/node"
+	"github.com/nautrouds/mmfg/v2/go/hub"
+	"github.com/nautrouds/mmfg/v2/go/node"
 )
 
 var msg = []byte("Hello MMFG!")

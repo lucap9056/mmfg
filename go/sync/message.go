@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"net"
 
-	"github.com/nautrouds/mmfg/internal/netutil"
+	"github.com/nautrouds/mmfg/v2/internal/netutil"
 	"golang.org/x/sys/unix"
 )
 

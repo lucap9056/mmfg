@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nautrouds/mmfg/go/shm"
-	mmfg_sync "github.com/nautrouds/mmfg/go/sync"
-	"github.com/nautrouds/mmfg/internal/netutil"
+	"github.com/nautrouds/mmfg/v2/go/shm"
+	mmfg_sync "github.com/nautrouds/mmfg/v2/go/sync"
+	"github.com/nautrouds/mmfg/v2/internal/netutil"
 	"golang.org/x/sys/unix"
 )
 

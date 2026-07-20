@@ -7,7 +7,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/nautrouds/mmfg/go/node"
+	"github.com/nautrouds/mmfg/v2/go/node"
 )
 
 func main() {

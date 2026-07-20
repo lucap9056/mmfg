@@ -8,7 +8,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/nautrouds/mmfg/go/hub"
+	"github.com/nautrouds/mmfg/v2/go/hub"
 )
 
 func main() {

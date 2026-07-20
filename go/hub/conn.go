@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nautrouds/mmfg/go/shm"
+	"github.com/nautrouds/mmfg/v2/go/shm"
 )
 
 var donePool = sync.Pool{

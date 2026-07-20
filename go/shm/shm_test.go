@@ -5,7 +5,7 @@ package shm_test
 import (
 	"testing"
 
-	"github.com/nautrouds/mmfg/go/shm"
+	"github.com/nautrouds/mmfg/v2/go/shm"
 )
 
 func TestBusAndStripe(t *testing.T) {
