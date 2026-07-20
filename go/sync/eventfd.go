@@ -9,11 +9,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var (
-	CONN_HEADER  = []byte("MMFG")
-	CONN_VERSION = byte(1)
-)
-
 // Eventfd provides a lightweight inter-process signaling mechanism.
 type Eventfd struct {
 	fd int

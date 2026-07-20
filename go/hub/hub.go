@@ -185,14 +185,7 @@ func (h *Hub) Dial(nodeName string, socketPath string) error {
 		return err
 	}
 
-	header := append(
-		mmfg_sync.CONN_HEADER,
-		[]byte{
-			mmfg_sync.CONN_VERSION,
-			byte(netutil.MsgHandshake),
-			byte(nodeID),
-		}...,
-	)
+	header := mmfg_sync.HandshakeMessage(nodeID)
 
 	h.mu.RLock()
 	chunkCount := h.bus.ChunkCount()
@@ -223,7 +216,7 @@ func (h *Hub) Dial(nodeName string, socketPath string) error {
 		for i := range fds {
 			fds[i] = h.bus.GetChunk(int16(^(i + chunkCount))).Fd
 		}
-		msg := []byte{byte(netutil.MsgNewChunk)}
+		msg := mmfg_sync.NewChunkMessage()
 		if err := netutil.SendMsgWithFDs(conn, msg, fds...); err != nil {
 			h.mu.Unlock()
 			return err
@@ -279,8 +272,8 @@ func (h *Hub) CleanupResources(nodeID int) {
 }
 
 func (h *Hub) syncChunk(node *NodeInfo, fds ...int) {
-	header := []byte{byte(netutil.MsgNewChunk)}
-	err := netutil.SendMsgWithFDs(node.conn, header, fds...)
+	msg := mmfg_sync.NewChunkMessage()
+	err := netutil.SendMsgWithFDs(node.conn, msg, fds...)
 	if err != nil {
 		return
 	}
