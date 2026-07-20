@@ -25,7 +25,7 @@ pub type Handler = Arc<dyn Fn(Box<dyn Connection>) -> Pin<Box<dyn Future<Output 
 
 pub struct NodeState {
     pub chunks: Vec<Chunk>,
-    pub waiters: HashMap<u32, oneshot::Sender<()>>,
+    pub waiters: HashMap<u32, oneshot::Sender<bool>>,
 }
 
 pub struct Node {
@@ -150,7 +150,13 @@ impl Node {
                                 layout::CMD_EXPAND_READY => {
                                     let mut state = this_ev.state.lock();
                                     if let Some(tx) = state.waiters.remove(&slot_id) {
-                                        let _ = tx.send(());
+                                        let _ = tx.send(true);
+                                    }
+                                }
+                                layout::CMD_EXPAND_ERROR => {
+                                    let mut state = this_ev.state.lock();
+                                    if let Some(tx) = state.waiters.remove(&slot_id) {
+                                        let _ = tx.send(false);
                                     }
                                 }
                                 _ => {

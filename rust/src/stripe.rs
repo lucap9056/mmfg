@@ -30,7 +30,7 @@ impl Stripe {
         }
     }
 
-    pub fn register_waiter(&self, tx: oneshot::Sender<()>) -> Result<()> {
+    pub fn register_waiter(&self, tx: oneshot::Sender<bool>) -> Result<()> {
         let mut state = self.state.lock();
         state.waiters.insert(self.slot_id, tx);
         Ok(())

@@ -19,7 +19,7 @@ pub struct ShmConnection {
     pub read_pos: usize,
     pub write_pos: usize,
     pub hub_ev_fd: RawFd,
-    expansion_rx: Option<oneshot::Receiver<()>>,
+    expansion_rx: Option<oneshot::Receiver<bool>>,
 }
 
 impl ShmConnection {
@@ -75,10 +75,10 @@ impl AsyncWrite for ShmConnection {
     ) -> Poll<io::Result<usize>> {
         if let Some(mut rx) = self.expansion_rx.take() {
             match Pin::new(&mut rx).poll(cx) {
-                Poll::Ready(Ok(())) => {
+                Poll::Ready(Ok(true)) => {
                     // Success, continue write
                 }
-                Poll::Ready(Err(_)) => {
+                Poll::Ready(Ok(false)) | Poll::Ready(Err(_)) => {
                     return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, "Expansion failed")));
                 }
                 Poll::Pending => {
@@ -141,10 +141,11 @@ impl Connection for ShmConnection {
         }
         
         Box::pin(async move {
-            rx.await.map_err(|_| {
-                MmfgError::Expansion("Expansion failed: Hub closed connection".to_string())
-            })?;
-            Ok(())
+            match rx.await {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(MmfgError::Expansion("Expansion failed: hub reported error".to_string())),
+                Err(_) => Err(MmfgError::Expansion("Expansion failed: Hub closed connection".to_string())),
+            }
         })
     }
 }
