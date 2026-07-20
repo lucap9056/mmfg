@@ -1,11 +1,8 @@
-use std::io;
 use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
-use tokio::net::UnixStream;
-use tokio::io::AsyncReadExt;
-use std::os::unix::io::FromRawFd;
+use std::os::unix::io::RawFd;
 use std::pin::Pin;
 use std::future::Future;
 
@@ -16,8 +13,13 @@ use crate::control::ControlRegion;
 use crate::stripe::Stripe;
 use crate::connection::{ShmConnection, Connection};
 use crate::handshake::perform_handshake;
+use crate::net;
 
-use crate::error::Result;
+use crate::error::{Result, MmfgError};
+
+const MSG_NEW_CHUNK: u8 = 2;
+const MSG_HEARTBEAT: u8 = 3;
+const MSG_RELEASE: u8 = 4;
 
 pub type Handler = Arc<dyn Fn(Box<dyn Connection>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
@@ -32,22 +34,25 @@ pub struct Node {
     pub node_ev: Arc<Eventfd>,
     pub hub_ev: Arc<Eventfd>,
     pub handler: Handler,
-    pub stream: tokio::sync::Mutex<UnixStream>,
+    pub conn_fd: RawFd,
     pub state: Arc<Mutex<NodeState>>,
 }
 
 impl Node {
-    /// Accepts from listener and spawns a task per connection into `Node::new`.
-    /// For a listener shared with other protocols, demux externally and call
-    /// `Node::new` directly instead.
-    pub async fn serve(listener: std::os::unix::net::UnixListener, handler: Handler) -> Result<()> {
+    pub async fn serve(listen_fd: RawFd, handler: Handler) -> Result<()> {
         let rt = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || -> Result<()> {
-            for stream in listener.incoming() {
-                let stream = stream?;
+            loop {
+                let conn_fd = match net::accept(listen_fd) {
+                    Ok(fd) => fd,
+                    Err(e) => {
+                        eprintln!("accept failed: {}", e);
+                        continue;
+                    }
+                };
                 let handler = Arc::clone(&handler);
                 rt.spawn(async move {
-                    match Node::new(stream, handler) {
+                    match Node::new(conn_fd, handler) {
                         Ok(node) => {
                             if let Err(e) = Arc::new(node).start_event_loop().await {
                                 eprintln!("Node event loop error: {}", e);
@@ -57,45 +62,62 @@ impl Node {
                     }
                 });
             }
-            Ok(())
         })
         .await
-        .map_err(|e| crate::error::MmfgError::Internal(format!("serve task panicked: {}", e)))?
+        .map_err(|e| MmfgError::Internal(format!("serve task panicked: {}", e)))?
     }
 
-    /// Binds socket_path and serves it. Convenience wrapper around `serve`.
     pub async fn listen(socket_path: &str, handler: Handler) -> Result<()> {
-        if std::fs::metadata(socket_path).is_ok() {
-            std::fs::remove_file(socket_path)?;
-        }
-        let listener = std::os::unix::net::UnixListener::bind(socket_path)?;
-        Self::serve(listener, handler).await
+        let listen_fd = net::listen_seqpacket(socket_path)?;
+        Self::serve(listen_fd, handler).await
     }
 
-    /// Runs the Hub handshake over an accepted stream and builds a `Node`.
-    /// Callers are responsible for routing only mmfg traffic here.
-    pub fn new(stream: std::os::unix::net::UnixStream, handler: Handler) -> Result<Self> {
-        let mut stream_sync = stream;
-        let handshake = perform_handshake(&mut stream_sync)?;
-        
-        let chunk0 = Chunk::attach(handshake.fds[0], layout::CHUNK_SIZE)?;
-        let node_ev = Eventfd::attach(handshake.fds[1]);
-        let hub_ev = Eventfd::attach(handshake.fds[2]);
+    pub fn new(conn_fd: RawFd, handler: Handler) -> Result<Self> {
+        let handshake = match perform_handshake(conn_fd) {
+            Ok(hs) => hs,
+            Err(e) => {
+                unsafe { libc::close(conn_fd) };
+                return Err(e);
+            }
+        };
+
+        let mut chunks = Vec::with_capacity(handshake.chunk_fds.len());
+        for &fd in &handshake.chunk_fds {
+            match Chunk::attach(fd, layout::CHUNK_SIZE) {
+                Ok(chunk) => chunks.push(chunk),
+                Err(e) => {
+                    unsafe {
+                        libc::close(handshake.node_ev_fd);
+                        libc::close(handshake.hub_ev_fd);
+                        libc::close(conn_fd);
+                    }
+                    return Err(e.into());
+                }
+            }
+        }
+
+        if chunks.is_empty() {
+            unsafe {
+                libc::close(handshake.node_ev_fd);
+                libc::close(handshake.hub_ev_fd);
+                libc::close(conn_fd);
+            }
+            return Err(MmfgError::Protocol("handshake carried no chunk fds".to_string()));
+        }
 
         let control_shm = SharedMemory::new(
-            chunk0.as_ptr() as *mut u8,
+            chunks[0].as_ptr() as *mut u8,
             layout::CONTROL_STRIPE_SIZE,
         );
         let control = Arc::new(ControlRegion::new(control_shm));
 
+        let node_ev = Eventfd::attach(handshake.node_ev_fd);
+        let hub_ev = Eventfd::attach(handshake.hub_ev_fd);
+
         let state = NodeState {
-            chunks: vec![chunk0],
+            chunks,
             waiters: HashMap::new(),
         };
-
-        // Convert sync stream to tokio stream
-        stream_sync.set_nonblocking(true)?;
-        let stream = UnixStream::from_std(stream_sync)?;
 
         Ok(Self {
             node_id: handshake.node_id,
@@ -103,14 +125,14 @@ impl Node {
             node_ev: Arc::new(node_ev),
             hub_ev: Arc::new(hub_ev),
             handler,
-            stream: tokio::sync::Mutex::new(stream),
+            conn_fd,
             state: Arc::new(Mutex::new(state)),
         })
     }
 
     pub async fn start_event_loop(self: Arc<Self>) -> Result<()> {
         println!("Rust Node {} starting event loops...", self.node_id);
-        
+
         let this_ev = Arc::clone(&self);
         let ev_handle = tokio::spawn(async move {
             loop {
@@ -145,65 +167,65 @@ impl Node {
             }
         });
 
-        let mut stream = self.stream.lock().await;
-        loop {
-            let mut msg_header = [0u8; 1];
-            match stream.read_exact(&mut msg_header).await {
-                Ok(_) => {
-                    if !self.handle_socket_msg(msg_header[0], &mut stream).await? {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    if e.kind() == io::ErrorKind::UnexpectedEof {
-                        break;
-                    }
-                    return Err(e.into());
-                }
-            }
-        }
+        // recvmsg with ancillary FDs has no safe async equivalent in tokio.
+        let this_msg = Arc::clone(&self);
+        let result = tokio::task::spawn_blocking(move || this_msg.message_loop())
+            .await
+            .map_err(|e| MmfgError::Internal(format!("message loop panicked: {}", e)))?;
 
         ev_handle.abort();
-        Ok(())
+        unsafe { libc::close(self.conn_fd) };
+        result
     }
 
     async fn wait_node_ev(&self) -> Result<()> {
         let ev = Arc::clone(&self.node_ev);
         tokio::task::spawn_blocking(move || ev.wait())
             .await
-            .map_err(|e| crate::error::MmfgError::Internal(format!("Spawn blocking failed: {}", e)))?
+            .map_err(|e| MmfgError::Internal(format!("Spawn blocking failed: {}", e)))?
             .map_err(|e| e.into())
     }
 
-    async fn handle_socket_msg(&self, msg_type: u8, stream: &mut UnixStream) -> Result<bool> {
-        match msg_type {
-            2 => { // MsgNewChunk
-                use std::os::unix::io::AsRawFd;
-                let fd = stream.as_raw_fd();
-                
-                let temp_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
-                let res = crate::net::receive_fds(&temp_stream, 1);
-                std::mem::forget(temp_stream);
-                
-                let fds = res?;
-                let chunk = Chunk::attach(fds[0], layout::CHUNK_SIZE)?;
-                let mut state = self.state.lock();
-                state.chunks.push(chunk);
+    fn message_loop(&self) -> Result<()> {
+        let max_fds = layout::MAX_CHUNKS;
+        loop {
+            let mut header = [0u8; 1];
+            let (n, fds) = match net::recv_msg_with_fds(self.conn_fd, &mut header, max_fds) {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("Node {}: connection closed: {}", self.node_id, e);
+                    return Ok(());
+                }
+            };
+
+            if n == 0 {
+                println!("Node {}: connection closed", self.node_id);
+                return Ok(());
             }
-            3 => { // Heartbeat
-                // Ignore
-            }
-            5 => { // MsgTakeover
-                let mut id_buf = [0u8; 4];
-                stream.read_exact(&mut id_buf).await?;
-                let slot_id = u32::from_le_bytes(id_buf);
-                self.handle_process(slot_id);
-            }
-            _ => {
-                println!("Unknown socket message: {}", msg_type);
+
+            match header[0] {
+                MSG_NEW_CHUNK => {
+                    let mut state = self.state.lock();
+                    for fd in fds {
+                        match Chunk::attach(fd, layout::CHUNK_SIZE) {
+                            Ok(chunk) => state.chunks.push(chunk),
+                            Err(e) => eprintln!("Node {}: failed to attach new chunk: {}", self.node_id, e),
+                        }
+                    }
+                }
+                MSG_HEARTBEAT | MSG_RELEASE => {
+                    for fd in fds {
+                        unsafe { libc::close(fd) };
+                    }
+                }
+                other => {
+                    println!("Node {}: unknown socket message: {}", self.node_id, other);
+                    for fd in fds {
+                        unsafe { libc::close(fd) };
+                    }
+                }
             }
         }
-        Ok(true)
     }
 
     fn handle_process(&self, slot_id: u32) {
@@ -215,9 +237,9 @@ impl Node {
         tokio::spawn(async move {
             let stripe = Stripe::new(slot_id, control.clone(), state);
             let conn = ShmConnection::new(stripe, hub_ev.fd());
-            
+
             (handler)(Box::new(conn)).await;
-            
+
             control.set_stripe_status(slot_id, layout::STRIPE_STATUS_DONE);
             let hub_resp_q_off = layout::OFF_RESP_QUEUE;
             control.push(hub_resp_q_off, slot_id, layout::CMD_PROCESS);

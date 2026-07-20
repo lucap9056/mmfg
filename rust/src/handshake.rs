@@ -1,36 +1,65 @@
-use std::io::Read;
-use std::os::unix::net::UnixStream;
-use crate::net::receive_fds;
 use std::os::unix::io::RawFd;
+use crate::net::recv_msg_with_fds;
+use crate::layout;
 use crate::error::{Result, MmfgError};
 
 pub const CONN_HEADER: &[u8; 4] = b"MMFG";
-pub const CONN_VERSION: u8 = 1;
+pub const CONN_VERSION: u8 = 2;
+const MSG_HANDSHAKE: u8 = 1;
+
+const MAX_HANDSHAKE_FDS: usize = 2 + layout::MAX_CHUNKS;
 
 pub struct HandshakeResult {
     pub node_id: usize,
-    pub fds: Vec<RawFd>,
+    pub node_ev_fd: RawFd,
+    pub hub_ev_fd: RawFd,
+    pub chunk_fds: Vec<RawFd>,
 }
 
-pub fn perform_handshake(stream: &mut UnixStream) -> Result<HandshakeResult> {
+fn close_all(fds: &[RawFd]) {
+    for &fd in fds {
+        unsafe { libc::close(fd) };
+    }
+}
+
+pub fn perform_handshake(fd: RawFd) -> Result<HandshakeResult> {
     let mut header = [0u8; 7];
-    stream.read_exact(&mut header).map_err(MmfgError::from)?;
-    
+    let (n, fds) = recv_msg_with_fds(fd, &mut header, MAX_HANDSHAKE_FDS)?;
+
+    if n != 7 {
+        close_all(&fds);
+        return Err(MmfgError::Protocol(format!("short header: got {} bytes, want 7", n)));
+    }
+
     if &header[0..4] != CONN_HEADER {
-        return Err(MmfgError::Protocol("Invalid handshake header".to_string()));
+        close_all(&fds);
+        return Err(MmfgError::Protocol(format!("invalid handshake header: {:?}", &header[0..4])));
     }
 
     if header[4] != CONN_VERSION {
-        return Err(MmfgError::Protocol(format!("Unsupported protocol version: {}", header[4])));
+        close_all(&fds);
+        return Err(MmfgError::Protocol(format!("unsupported protocol version: {}", header[4])));
     }
-    
-    // header[5] is MsgType (Handshake = 1)
+
+    if header[5] != MSG_HANDSHAKE {
+        close_all(&fds);
+        return Err(MmfgError::Protocol(format!("unexpected message type in handshake: {}", header[5])));
+    }
+
     let node_id = header[6] as usize;
+    if node_id == 0 || node_id >= layout::MAX_NODES {
+        close_all(&fds);
+        return Err(MmfgError::Protocol(format!("invalid nodeID {}", node_id)));
+    }
 
-    let fds = receive_fds(stream, 3).map_err(|e| MmfgError::Protocol(format!("FD receive failed: {}", e)))?;
+    if fds.len() < 3 {
+        close_all(&fds);
+        return Err(MmfgError::Protocol(format!("expected at least 3 fds, got {}", fds.len())));
+    }
 
-    Ok(HandshakeResult {
-        node_id,
-        fds,
-    })
+    let node_ev_fd = fds[0];
+    let hub_ev_fd = fds[1];
+    let chunk_fds = fds[2..].to_vec();
+
+    Ok(HandshakeResult { node_id, node_ev_fd, hub_ev_fd, chunk_fds })
 }
