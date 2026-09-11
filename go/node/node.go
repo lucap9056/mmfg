@@ -1,4 +1,4 @@
-//go:build unix
+//go:build linux
 
 package node
 
@@ -295,6 +295,17 @@ func (n *Node) loadSession(s *nodeSession) {
 }
 
 func (n *Node) processSlot(slotID uint32) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Node %d: handler panicked while processing slot %d: %v", n.nodeID, slotID, r)
+			n.ctrl.SetStripeStatus(slotID, shm.StripeStatusDone)
+			respQOff := shm.GetNodeReqQueueOffset(0)
+			if n.ctrl.Push(respQOff, slotID, shm.CMD_PROCESS) {
+				n.hubEv.Notify()
+			}
+		}
+	}()
+
 	cid, off := n.ctrl.GetStripeHeader(slotID)
 
 	headerChunk := n.getChunk(cid)
@@ -408,9 +419,6 @@ func (c *nodeConn) OnExpandComplete() {
 }
 
 func (n *Node) getChunk(cid int16) *shm.Chunk {
-	if cid >= 0 {
-		log.Printf("CID: %d\n", cid)
-	}
 	realCID := int(^cid)
 	for {
 		n.mu.RLock()
