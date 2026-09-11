@@ -19,6 +19,24 @@ async fn main() -> Result<()> {
             let mut buf = Vec::new();
             // ShmConnection needs some data to read from, but here we just read whatever is in the stripe
             if let Ok(_) = conn.read_to_end(&mut buf).await {
+                if buf == b"__MMFG_TEST_PANIC__" {
+                    panic!("integration test triggered panic");
+                }
+                if let Some(hay_len) = buf.strip_prefix(b"__MMFG_TEST_VIEWFIND__:").map(|rest| rest.len()) {
+                    let mut result = String::new();
+                    let view_res = conn.view(buf.len() - hay_len, hay_len, &mut |v| {
+                        result = match v.index(b"NEEDLE") {
+                            Some(idx) => idx.to_string(),
+                            None => "-1".to_string(),
+                        };
+                        Ok(())
+                    });
+                    if view_res.is_ok() {
+                        let _ = conn.write_all(result.as_bytes()).await;
+                        let _ = conn.flush().await;
+                    }
+                    return;
+                }
                 println!("Node received: {} bytes", buf.len());
                 // Echo handler
                 let _ = conn.write_all(&buf).await;

@@ -5,13 +5,14 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::future::Future;
-use crate::stripe::Stripe;
+use crate::stripe::{Stripe, Viewer};
 use crate::layout;
 use crate::error::{Result, MmfgError};
 
 pub trait Connection: AsyncRead + AsyncWrite + Send + Unpin {
     fn data_len(&self) -> u32;
     fn request_expand(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
+    fn view(&mut self, offset: usize, length: usize, call: &mut dyn FnMut(&mut Viewer) -> Result<()>) -> Result<()>;
 }
 
 pub struct ShmConnection {
@@ -129,6 +130,10 @@ impl Connection for ShmConnection {
     fn data_len(&self) -> u32 {
         let (data_len, _) = self.stripe.get_meta();
         data_len
+    }
+
+    fn view(&mut self, offset: usize, length: usize, call: &mut dyn FnMut(&mut Viewer) -> Result<()>) -> Result<()> {
+        self.stripe.view(offset, length, call)
     }
 
     fn request_expand(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {

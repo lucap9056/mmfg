@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nautrouds/mmfg/v2/go/shm"
 )
 
 func TestConcurrentRequestsRust(t *testing.T) {
@@ -55,6 +57,65 @@ func TestConcurrentRequestsRust(t *testing.T) {
 			}
 			if !bytes.Equal(buf, payload) {
 				errCh <- fmt.Errorf("id %d: data mismatch via %s", id, target)
+				return
+			}
+			errCh <- nil
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+func TestConcurrentLargeTransfersRust(t *testing.T) {
+	const workers = 64
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+	wg.Add(workers)
+
+	for i := range workers {
+		go func(id int) {
+			defer wg.Done()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			conn, err := testHub.Request(ctx, 1, true)
+			if err != nil {
+				errCh <- fmt.Errorf("id %d: request: %w", id, err)
+				return
+			}
+			defer conn.Close()
+
+			target := "rust1"
+			if id%2 == 0 {
+				target = "rust2"
+			}
+
+			size := shm.BlockSize + (id * shm.BlockSize / 8)
+			payload := randomBytes(size, int64(id)+1000)
+			if _, err := conn.Write(payload); err != nil {
+				errCh <- fmt.Errorf("id %d: write: %w", id, err)
+				return
+			}
+			if err := conn.Next(target); err != nil {
+				errCh <- fmt.Errorf("id %d: Next(%s): %w", id, target, err)
+				return
+			}
+
+			buf := make([]byte, len(payload))
+			if _, err := io.ReadFull(conn, buf); err != nil {
+				errCh <- fmt.Errorf("id %d: read: %w", id, err)
+				return
+			}
+			if !bytes.Equal(buf, payload) {
+				errCh <- fmt.Errorf("id %d: data mismatch via %s (size %d)", id, target, size)
 				return
 			}
 			errCh <- nil

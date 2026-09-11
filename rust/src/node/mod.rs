@@ -244,7 +244,9 @@ impl Node {
             let stripe = Stripe::new(slot_id, control.clone(), state);
             let conn = ShmConnection::new(stripe, hub_ev.fd());
 
-            (handler)(Box::new(conn)).await;
+            if let Err(e) = tokio::spawn((handler)(Box::new(conn))).await {
+                eprintln!("Node: handler panicked while processing slot {}: {}", slot_id, e);
+            }
 
             control.set_stripe_status(slot_id, layout::STRIPE_STATUS_DONE);
             let hub_resp_q_off = layout::OFF_RESP_QUEUE;
