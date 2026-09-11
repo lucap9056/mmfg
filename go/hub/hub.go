@@ -1,4 +1,4 @@
-//go:build unix
+//go:build linux
 
 package hub
 
@@ -109,7 +109,14 @@ func NewHub(opts ...Option) (*Hub, error) {
 }
 
 func (h *Hub) AppendedChunkBroacast(chunk *shm.Chunk) {
+	h.mu.RLock()
+	nodes := make([]*NodeInfo, 0, len(h.nodes))
 	for _, node := range h.nodes {
+		nodes = append(nodes, node)
+	}
+	h.mu.RUnlock()
+
+	for _, node := range nodes {
 		h.syncChunk(node, chunk.Fd)
 	}
 }
@@ -240,6 +247,8 @@ func (h *Hub) watchdog(name string, node *NodeInfo) {
 			h.mu.Lock()
 			delete(h.nodes, name)
 			h.mu.Unlock()
+			node.conn.Close()
+			node.nodeEv.Close()
 			return
 		}
 	}

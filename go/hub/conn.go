@@ -1,4 +1,4 @@
-//go:build unix
+//go:build linux
 
 package hub
 
@@ -166,10 +166,13 @@ func (c *busConn) Next(nodeName string) error {
 	}
 
 	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	for {
 		status := c.hub.ctrl.GetStripeStatus(c.slotID)
 		if status == shm.StripeStatusDone || status == shm.StripeStatusReady {
 			break
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("timed out waiting for previous owner to finish slot %d", c.slotID)
 		}
 		time.Sleep(10 * time.Microsecond)
 	}
