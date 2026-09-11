@@ -52,7 +52,7 @@ pub fn get_node_req_queue_offset(node_id: usize) -> usize {
 }
 
 pub fn get_stripe_entry_offset(slot_id: u32) -> usize {
-    OFF_STRIPE_REGISTRY + ((slot_id as usize) * STRIPE_ENTRY_SIZE)
+    OFF_STRIPE_REGISTRY + ((slot_id as usize - 1) * STRIPE_ENTRY_SIZE)
 }
 
 #[cfg(test)]

@@ -15,6 +15,10 @@ mod tests {
         
         let slot_id = 1;
         let stripe_off = layout::get_stripe_entry_offset(slot_id);
-        assert_eq!(stripe_off, 524288 + 12);
+        assert_eq!(stripe_off, 524288);
+
+        let slot_id = 2;
+        let stripe_off = layout::get_stripe_entry_offset(slot_id);
+        assert_eq!(stripe_off, 524288 + layout::STRIPE_ENTRY_SIZE);
     }
 }
