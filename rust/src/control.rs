@@ -76,21 +76,30 @@ impl ControlRegion {
     }
 
     pub fn push(&self, q_off: usize, slot_id: u32, cmd: u32) -> bool {
-        let head = self.shm.atomic_read_u32(q_off + layout::Q_OFF_HEAD, Ordering::Acquire);
-        let tail = self.shm.atomic_read_u32(q_off + layout::Q_OFF_TAIL, Ordering::Acquire);
+        let mut spin = 0u32;
+        loop {
+            let head = self.shm.atomic_read_u32(q_off + layout::Q_OFF_HEAD, Ordering::Acquire);
+            let tail = self.shm.atomic_read_u32(q_off + layout::Q_OFF_TAIL, Ordering::Acquire);
 
-        if (tail + 1) % layout::QUEUE_SIZE as u32 == head {
-            return false; // Full
+            if (tail + 1) % layout::QUEUE_SIZE as u32 == head {
+                spin += 1;
+                if spin > 1_000_000 {
+                    return false; // Full
+                }
+                std::hint::spin_loop();
+                continue;
+            }
+
+            let next_tail = (tail + 1) % layout::QUEUE_SIZE as u32;
+            if self.shm.atomic_cas_u32(q_off + layout::Q_OFF_TAIL, tail, next_tail, Ordering::AcqRel) {
+                let entry_idx = (tail % layout::QUEUE_SIZE as u32) as usize;
+                let entry_off = q_off + layout::Q_OFF_ENTRIES + (entry_idx * 8);
+
+                let packed = (u64::from(cmd | layout::Q_READY_BIT) << 32) | u64::from(slot_id);
+                self.shm.atomic_write_u64(entry_off, packed, Ordering::Release);
+                return true;
+            }
         }
-
-        let entry_idx = (tail % layout::QUEUE_SIZE as u32) as usize;
-        let entry_off = q_off + layout::Q_OFF_ENTRIES + (entry_idx * 8);
-
-        let packed = (u64::from(cmd | layout::Q_READY_BIT) << 32) | u64::from(slot_id);
-        self.shm.atomic_write_u64(entry_off, packed, Ordering::Release);
-
-        self.shm.atomic_write_u32(q_off + layout::Q_OFF_TAIL, (tail + 1) % layout::QUEUE_SIZE as u32, Ordering::Release);
-        true
     }
 
     pub fn get_stripe_header(&self, slot_id: u32) -> (i16, i16) {

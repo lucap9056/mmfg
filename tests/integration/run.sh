@@ -1,19 +1,13 @@
 #!/bin/bash
 set -e
 
-echo "--- 1. Building Binaries ---"
+echo "--- 1. Building Rust Node ---"
 (
     cd rust
     cargo build --release
 )
-mkdir -p bin
 
-(
-    go build -o bin/cross_lang_integration_test ./tests/integration/main.go
-)
-
-echo "--- 2. Running Integration Test Orchestrator ---"
-./bin/cross_lang_integration_test
+echo "--- 2. Running Go <-> Rust Integration Tests ---"
+go test -v -timeout 180s ./tests/integration/...
 
 echo "--- Tests finished ---"
-

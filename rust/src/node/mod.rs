@@ -248,7 +248,10 @@ impl Node {
 
             control.set_stripe_status(slot_id, layout::STRIPE_STATUS_DONE);
             let hub_resp_q_off = layout::OFF_RESP_QUEUE;
-            control.push(hub_resp_q_off, slot_id, layout::CMD_PROCESS);
+            if !control.push(hub_resp_q_off, slot_id, layout::CMD_PROCESS) {
+                eprintln!("Node: FAILED to push slot {} to hub response queue (queue full)", slot_id);
+                return;
+            }
             if let Err(e) = hub_ev.notify() {
                 eprintln!("Failed to notify hub: {}", e);
             }

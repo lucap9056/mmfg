@@ -96,6 +96,14 @@ impl SharedMemory {
         }
     }
 
+    pub fn atomic_cas_u32(&self, offset: usize, current: u32, new: u32, order: Ordering) -> bool {
+        assert!(offset + 4 <= self.len, "SHM atomic cas out of bounds");
+        unsafe {
+            let ptr = self.ptr.add(offset) as *const AtomicU32;
+            (*ptr).compare_exchange(current, new, order, Ordering::Acquire).is_ok()
+        }
+    }
+
     pub fn atomic_read_u64(&self, offset: usize, order: Ordering) -> u64 {
         assert!(offset + 8 <= self.len, "SHM atomic read out of bounds");
         unsafe {
