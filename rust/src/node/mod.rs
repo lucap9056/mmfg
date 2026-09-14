@@ -249,14 +249,17 @@ impl Node {
             }
 
             control.set_stripe_status(slot_id, layout::STRIPE_STATUS_DONE);
-            let hub_resp_q_off = layout::OFF_RESP_QUEUE;
-            if !control.push(hub_resp_q_off, slot_id, layout::CMD_PROCESS) {
-                eprintln!("Node: FAILED to push slot {} to hub response queue (queue full)", slot_id);
-                return;
-            }
+            Node::push_response(&control, slot_id).await;
             if let Err(e) = hub_ev.notify() {
                 eprintln!("Failed to notify hub: {}", e);
             }
         });
+    }
+
+    async fn push_response(control: &ControlRegion, slot_id: u32) {
+        let hub_resp_q_off = layout::OFF_RESP_QUEUE;
+        while !control.push(hub_resp_q_off, slot_id, layout::CMD_PROCESS) {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
     }
 }

@@ -55,7 +55,6 @@ func (b *Bus) AllocBlocks(count int) ([]Block, error) {
 		b.mu.RLock()
 		bitmapSlice := *b.bitmap.Load()
 		chunksSnapshot := b.chunks
-		b.mu.RUnlock()
 
 		numWords := uint64(len(bitmapSlice))
 		startWord := b.lastSearchPos.Load() % numWords
@@ -103,12 +102,14 @@ func (b *Bus) AllocBlocks(count int) ([]Block, error) {
 					remaining -= foundCount
 					if remaining == 0 {
 						b.lastSearchPos.Store((wordIdx + 1) % numWords)
+						b.mu.RUnlock()
 						return allocated, nil
 					}
 					break
 				}
 			}
 		}
+		b.mu.RUnlock()
 
 		if err := b.tryAppendChunk(); err != nil {
 			for _, res := range allocated {
@@ -155,6 +156,9 @@ func (b *Bus) tryAppendChunk() error {
 }
 
 func (b *Bus) FreeBlock(chunkID, blockIdx int16) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
 	bitmap := *b.bitmap.Load()
 
 	globalBlockIdx := GetBlockAddress(chunkID, blockIdx)

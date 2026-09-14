@@ -73,7 +73,7 @@ func (c *Control) Push(qOffset uintptr, slotID uint32, cmd uint32) bool {
 		head := c.readU32(qOffset + Q_OFF_HEAD)
 		tail := c.readU32(qOffset + Q_OFF_TAIL)
 
-		if (tail+1)%QueueSize == head {
+		if tail-head >= QueueSize-1 {
 			if spin < 10 {
 				Procyield(30)
 			} else if spin < 50 {
@@ -87,8 +87,8 @@ func (c *Control) Push(qOffset uintptr, slotID uint32, cmd uint32) bool {
 			continue
 		}
 
-		if c.casU32(qOffset+Q_OFF_TAIL, tail, (tail+1)%QueueSize) {
-			entryOff := qOffset + Q_OFF_ENTRIES + uintptr(tail*8)
+		if c.casU32(qOffset+Q_OFF_TAIL, tail, tail+1) {
+			entryOff := qOffset + Q_OFF_ENTRIES + uintptr((tail%QueueSize)*8)
 
 			packed := (uint64(cmd|Q_READY_BIT) << 32) | uint64(slotID)
 			ptr := c.stripe.GetPointer(entryOff)
@@ -109,7 +109,7 @@ func (c *Control) Pop(qOffset uintptr) (uint32, uint32, bool) {
 		return 0, 0, false
 	}
 
-	entryOff := qOffset + Q_OFF_ENTRIES + uintptr(head*8)
+	entryOff := qOffset + Q_OFF_ENTRIES + uintptr((head%QueueSize)*8)
 	ptr := c.stripe.GetPointer(entryOff)
 
 	for spin := 0; ; spin++ {
@@ -119,7 +119,7 @@ func (c *Control) Pop(qOffset uintptr) (uint32, uint32, bool) {
 
 		if (cmd & Q_READY_BIT) != 0 {
 			atomic.StoreUint64((*uint64)(ptr), 0)
-			c.writeU32(qOffset+Q_OFF_HEAD, (head+1)%QueueSize)
+			c.writeU32(qOffset+Q_OFF_HEAD, head+1)
 			return slotID, cmd & (^uint32(Q_READY_BIT)), true
 		}
 

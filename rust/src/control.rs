@@ -59,9 +59,8 @@ impl ControlRegion {
 
         // Clear entry
         self.shm.atomic_write_u64(entry_off, 0, Ordering::Release);
-        
-        // Advance head
-        self.shm.atomic_write_u32(q_off + layout::Q_OFF_HEAD, (head + 1) % layout::QUEUE_SIZE as u32, Ordering::Release);
+
+        self.shm.atomic_write_u32(q_off + layout::Q_OFF_HEAD, head.wrapping_add(1), Ordering::Release);
 
         Some((slot_id, cmd))
     }
@@ -81,7 +80,7 @@ impl ControlRegion {
             let head = self.shm.atomic_read_u32(q_off + layout::Q_OFF_HEAD, Ordering::Acquire);
             let tail = self.shm.atomic_read_u32(q_off + layout::Q_OFF_TAIL, Ordering::Acquire);
 
-            if (tail + 1) % layout::QUEUE_SIZE as u32 == head {
+            if tail.wrapping_sub(head) >= layout::QUEUE_SIZE as u32 - 1 {
                 spin += 1;
                 if spin > 1_000_000 {
                     return false; // Full
@@ -90,7 +89,7 @@ impl ControlRegion {
                 continue;
             }
 
-            let next_tail = (tail + 1) % layout::QUEUE_SIZE as u32;
+            let next_tail = tail.wrapping_add(1);
             if self.shm.atomic_cas_u32(q_off + layout::Q_OFF_TAIL, tail, next_tail, Ordering::AcqRel) {
                 let entry_idx = (tail % layout::QUEUE_SIZE as u32) as usize;
                 let entry_off = q_off + layout::Q_OFF_ENTRIES + (entry_idx * 8);

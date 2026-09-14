@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/nautrouds/mmfg/v2/go/shm"
 	mmfg_sync "github.com/nautrouds/mmfg/v2/go/sync"
@@ -40,6 +41,31 @@ type NodeInfo struct {
 	nodeID int
 	conn   *net.UnixConn
 	nodeEv *mmfg_sync.Eventfd
+
+	evMu   sync.RWMutex
+	closed bool
+}
+
+func (n *NodeInfo) notify() error {
+	n.evMu.RLock()
+	defer n.evMu.RUnlock()
+	if n.closed {
+		return fmt.Errorf("node closed")
+	}
+	return n.nodeEv.Notify()
+}
+
+func (n *NodeInfo) closeEventfd() error {
+	n.evMu.Lock()
+	defer n.evMu.Unlock()
+	n.closed = true
+	return n.nodeEv.Close()
+}
+
+func (n *NodeInfo) isClosed() bool {
+	n.evMu.RLock()
+	defer n.evMu.RUnlock()
+	return n.closed
 }
 
 func (h *Hub) allocNodeID() (int, error) {
@@ -134,14 +160,22 @@ func (h *Hub) allocSlot(stripe *shm.Stripe) (uint32, error) {
 	return slotID, nil
 }
 
-func (h *Hub) submit(node *NodeInfo, slotID uint32) error {
+func (h *Hub) pushToNode(node *NodeInfo, slotID uint32, cmd uint32) error {
 	reqQOff := shm.GetNodeReqQueueOffset(node.nodeID)
-
-	if !h.ctrl.Push(reqQOff, slotID, shm.CMD_PROCESS) {
-		return fmt.Errorf("request queue full")
+	for !h.ctrl.Push(reqQOff, slotID, cmd) {
+		if node.isClosed() {
+			return fmt.Errorf("node disconnected while request queue full")
+		}
+		time.Sleep(time.Millisecond)
 	}
+	return nil
+}
 
-	return node.nodeEv.Notify()
+func (h *Hub) submit(node *NodeInfo, slotID uint32) error {
+	if err := h.pushToNode(node, slotID, shm.CMD_PROCESS); err != nil {
+		return err
+	}
+	return node.notify()
 }
 
 func (h *Hub) dispatchLoop() error {
@@ -248,7 +282,7 @@ func (h *Hub) watchdog(name string, node *NodeInfo) {
 			delete(h.nodes, name)
 			h.mu.Unlock()
 			node.conn.Close()
-			node.nodeEv.Close()
+			node.closeEventfd()
 			return
 		}
 	}
@@ -337,15 +371,23 @@ func (h *Hub) handleExpandRequest(nodeID int, slotID uint32) {
 }
 
 func (h *Hub) expandResponse(nodeID int, slotID uint32, cmd uint32) {
-	reqQOff := shm.GetNodeReqQueueOffset(nodeID)
-	h.ctrl.Push(reqQOff, slotID, cmd)
-
 	h.mu.RLock()
+	var target *NodeInfo
 	for _, n := range h.nodes {
 		if n.nodeID == nodeID {
-			n.nodeEv.Notify()
+			target = n
 			break
 		}
 	}
 	h.mu.RUnlock()
+
+	if target == nil {
+		return
+	}
+
+	if err := h.pushToNode(target, slotID, cmd); err != nil {
+		return
+	}
+
+	target.notify()
 }

@@ -299,10 +299,7 @@ func (n *Node) processSlot(slotID uint32) {
 		if r := recover(); r != nil {
 			log.Printf("Node %d: handler panicked while processing slot %d: %v", n.nodeID, slotID, r)
 			n.ctrl.SetStripeStatus(slotID, shm.StripeStatusDone)
-			respQOff := shm.GetNodeReqQueueOffset(0)
-			if n.ctrl.Push(respQOff, slotID, shm.CMD_PROCESS) {
-				n.hubEv.Notify()
-			}
+			n.pushResponse(slotID)
 		}
 	}()
 
@@ -346,13 +343,15 @@ func (n *Node) processSlot(slotID uint32) {
 	}
 
 	n.ctrl.SetStripeStatus(slotID, shm.StripeStatusDone)
+	n.pushResponse(slotID)
+}
 
+func (n *Node) pushResponse(slotID uint32) {
 	respQOff := shm.GetNodeReqQueueOffset(0)
-	if n.ctrl.Push(respQOff, slotID, shm.CMD_PROCESS) {
-		n.hubEv.Notify()
-	} else {
-		fmt.Printf("Node %d: FAILED to push Slot %d to RespQueue\n", n.nodeID, slotID)
+	for !n.ctrl.Push(respQOff, slotID, shm.CMD_PROCESS) {
+		time.Sleep(time.Millisecond)
 	}
+	n.hubEv.Notify()
 }
 
 type nodeConn struct {
